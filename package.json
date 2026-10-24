@@ -1,0 +1,19 @@
+{
+  "name": "ozb-textback",
+  "private": true,
+  "type": "module",
+  "description": "Missed-call text-back: a forwarded call gets a greeting, a voicemail and one text",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "node --test \"test/*.test.mjs\"",
+    "whoami": "wrangler whoami --env-file ../.env",
+    "db:create": "wrangler d1 create ozb_textback --env-file ../.env",
+    "db:migrate": "wrangler d1 migrations apply ozb_textback --remote --env-file ../.env",
+    "db:migrate:local": "wrangler d1 migrations apply ozb_textback --local",
+    "add-client": "node scripts/add-client.mjs",
+    "deploy": "wrangler deploy --env-file ../.env"
+  },
+  "devDependencies": {
+    "wrangler": "^4.149.0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "One Zero Backspace",
+  "legal_name": "One Zero Backspace LLC",
+  "owner_name": "Ryan Lowe",
+  "owner_cell": "+14122924603",
+  "twilio_subaccount_sid": null,
+  "number": "",
+  "greeting": "Thanks for calling One Zero Backspace. Sorry we missed you. We'll text you at this number about your call. Message and data rates may apply. Reply STOP to opt out. Please leave a message after the beep.",
+  "first_text": "One Zero Backspace: Sorry we missed your call. Reply here with what you need, or we'll call you back soon. Msg & data rates may apply. Reply STOP to opt out.",
+  "lookup_landlines": 0,
+  "notes": "Client #1: OZB's own line. Ryan's Tello cell forwards unanswered calls here (**61*1<number>#). Number: fill in once bought."
+}
