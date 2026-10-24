@@ -53,6 +53,19 @@ export const safeGreeting = (env, name = "") =>
 /** Just the beep and the voicemail: for /voice/heard when it fails, as the greeting has already played. */
 export const recordOnly = (env) => twiml(record(env));
 
+/**
+ * Comparing voices (VOICE_SAMPLER = comma-separated Twilio voice names): the
+ * caller hears the client's greeting once per voice, each announced by number,
+ * then the call ends. No call row, no voicemail, no text. Only for test calls
+ * before the line goes live; unset it afterwards.
+ */
+export function voiceSampler(env, client) {
+  const voices = String(env.VOICE_SAMPLER || "").split(",").map((v) => v.trim()).filter(Boolean);
+  const parts = voices.map((v, i) =>
+    `<Say voice="${xml(env.SAY_VOICE || "Polly.Joanna")}">Voice ${i + 1}.</Say><Say voice="${xml(v)}">${xml(client.greeting)}</Say><Pause length="1"/>`);
+  return twiml(parts.join("") + `<Say voice="${xml(env.SAY_VOICE || "Polly.Joanna")}">That's all ${voices.length}. Goodbye.</Say><Hangup/>`);
+}
+
 /** POST /voice */
 export async function voice(env, params, accountSid) {
   let client = null;
@@ -60,6 +73,7 @@ export async function voice(env, params, accountSid) {
     client = await clientForCall(env, params, accountSid);
     if (!client) return twiml(`${say(env, UNKNOWN_MESSAGE)}<Hangup/>`);
     if (client.status !== "active") return twiml(`${say(env, PAUSED_MESSAGE)}<Hangup/>`);
+    if (env.VOICE_SAMPLER) return voiceSampler(env, client);
     await env.DB.prepare(
       `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (call_sid) DO NOTHING`,

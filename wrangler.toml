@@ -23,6 +23,9 @@ PUBLIC_ORIGIN = "https://textback.onezerobackspace.com"
 SAY_VOICE     = "Polly.Joanna"
 # The $39/month plan's allowance, per client per month (Eastern time).
 # Reported by /admin/usage; nothing is cut off when a client goes over.
+# TEMPORARY (2026-10-24): a call plays the greeting in each of these voices, then
+# hangs up (src/voice.js voiceSampler). Remove once Ryan has picked a voice.
+VOICE_SAMPLER = "Polly.Danielle-Generative, Polly.Matthew-Generative, Google.en-US-Chirp3-HD-Aoede, Google.en-US-Chirp3-HD-Charon"
 PLAN_TEXTS    = "300"
 PLAN_MINUTES  = "60"
 # Voicemail emails to each client's owner_email (src/notify.js). Must be one

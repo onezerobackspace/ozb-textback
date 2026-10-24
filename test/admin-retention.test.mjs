@@ -161,10 +161,11 @@ test("add-client checks the client and builds the INSERT", () => {
   assert.ok(bad.some((p) => p.startsWith("daily_text_cap ")));
 });
 
-test("OZB's own client file passes everything but the number, which isn't bought yet", () => {
+test("OZB's own client file passes every check, with its bought toll-free number", () => {
   const ozb = JSON.parse(readFileSync(new URL("../scripts/clients/ozb.json", import.meta.url), "utf8"));
-  assert.deepEqual(clientProblems(ozb), ["number must be the client's Twilio number in E.164 (buy it first)"]);
-  assert.deepEqual(clientProblems({ ...ozb, number: OZB_NUMBER }), []);
+  assert.deepEqual(clientProblems(ozb), []);
+  assert.equal(ozb.number, "+18884117026");
+  assert.deepEqual(clientProblems({ ...ozb, number: "" }), ["number must be the client's Twilio number in E.164 (buy it first)"]);
   assert.equal(ozb.first_text, OZB.first_text, "the tests use the real first text");
   assert.ok(ozb.first_text.length <= 160, `one segment: ${ozb.first_text.length} characters`);
 });
