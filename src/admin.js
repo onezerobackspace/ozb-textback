@@ -28,6 +28,16 @@ export async function admin(request, env, path) {
               COALESCE(u.voice_minutes, 0) AS voice_minutes
          FROM clients c LEFT JOIN usage u ON u.client_id = c.id AND u.month = ?1 ORDER BY c.id`,
     ).bind(month).all();
+    // The last 30 days of calls: why callers weren't texted, and what Twilio's
+    // caller ID check (StirVerstat) said, so a wave of spoofed calls shows up.
+    const since = new Date(Date.now() - 30 * 86400_000).toISOString();
+    const { results: why } = await env.DB.prepare(
+      "SELECT client_id, COALESCE(why_not_texted, CASE WHEN texted = 1 THEN 'texted' ELSE 'pending' END) AS k, COUNT(*) AS n FROM calls WHERE at > ?1 GROUP BY 1, 2",
+    ).bind(since).all();
+    const { results: stir } = await env.DB.prepare(
+      "SELECT client_id, COALESCE(stir_verstat, 'none') AS k, COUNT(*) AS n FROM calls WHERE at > ?1 GROUP BY 1, 2",
+    ).bind(since).all();
+    const tally = (rows, id) => Object.fromEntries((rows || []).filter((r) => r.client_id === id).map((r) => [r.k, r.n]));
     return json({
       ok: true, month, allowance: { texts, minutes },
       clients: (results || []).map((r) => ({
@@ -35,6 +45,8 @@ export async function admin(request, env, path) {
         texts: r.texts_out + r.texts_in,
         over_texts: Math.max(0, r.texts_out + r.texts_in - texts),
         over_minutes: Math.max(0, r.voice_minutes - minutes),
+        calls_30_days: tally(why, r.id),
+        caller_id_30_days: tally(stir, r.id),
       })),
     });
   }

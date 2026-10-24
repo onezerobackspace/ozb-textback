@@ -15,6 +15,8 @@ const LOOKUP = "https://lookups.twilio.com/v2/PhoneNumbers";
 
 const ACCOUNT_SID = /^AC[0-9a-f]{32}$/i;
 const RECORDING_SID = /^RE[0-9a-f]{32}$/i;
+const MESSAGE_SID = /^(SM|MM)[0-9a-f]{32}$/i;
+const CALL_SID = /^CA[0-9a-f]{32}$/i;
 
 const enc = new TextEncoder();
 
@@ -134,14 +136,38 @@ export function twilio(env, accountSid) {
     },
 
     /** Deletes a recording. True when it's gone (deleted now, or already). */
-    async deleteRecording(recordingSid) {
-      if (!RECORDING_SID.test(recordingSid || "")) return true;
+    deleteRecording: (sid) => remove(RECORDING_SID, "Recordings", sid),
+
+    /** Deletes a message (its body and numbers) from Twilio's logs. True when it's gone. */
+    deleteMessage: (sid) => remove(MESSAGE_SID, "Messages", sid),
+
+    /** Deletes a finished call's record from Twilio's logs. True when it's gone. */
+    deleteCall: (sid) => remove(CALL_SID, "Calls", sid),
+
+    /**
+     * The SIDs of a call's recordings, including any whose /recording callback
+     * never arrived. Null when Twilio couldn't be asked (try again tomorrow).
+     */
+    async callRecordings(callSid) {
+      if (!CALL_SID.test(callSid || "")) return [];
       try {
-        const res = await fetch(`${base}/Recordings/${recordingSid}.json`, { method: "DELETE", headers: { Authorization: auth } });
-        return res.status === 204 || res.status === 404;
-      } catch { return false; }
+        const res = await fetch(`${base}/Recordings.json?CallSid=${callSid}&PageSize=50`, { headers: { Authorization: auth } });
+        if (res.status === 404) return [];
+        if (!res.ok) return null;
+        const data = await res.json();
+        return (data?.recordings || []).map((r) => r.sid).filter((s) => RECORDING_SID.test(s || ""));
+      } catch { return null; }
     },
   };
+
+  /** DELETE one resource. A SID that isn't one has nothing at Twilio, so it counts as gone. */
+  async function remove(pattern, kind, sid) {
+    if (!pattern.test(sid || "")) return true;
+    try {
+      const res = await fetch(`${base}/${kind}/${sid}.json`, { method: "DELETE", headers: { Authorization: auth } });
+      return res.status === 204 || res.status === 404;
+    } catch { return false; }
+  }
 }
 
 /** Escapes text for TwiML. */

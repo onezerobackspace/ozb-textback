@@ -25,24 +25,31 @@ SAY_VOICE     = "Polly.Joanna"
 # Reported by /admin/usage; nothing is cut off when a client goes over.
 PLAN_TEXTS    = "300"
 PLAN_MINUTES  = "60"
+# Voicemail emails to each client's owner_email (src/notify.js). Must be one
+# of the send_email binding's allowed_sender_addresses below.
+MAIL_FROM      = "ryan@onezerobackspace.com"
+MAIL_FROM_NAME = "OZB Text-back"
 
-# Secrets, never in this file (set from ../.env and the Twilio Console):
-#   npx wrangler secret put TWILIO_ACCOUNT_SID    --env-file ../.env   # OZB's main account (AC...)
-#   npx wrangler secret put TWILIO_API_KEY_SID    --env-file ../.env   # SK..., the key every REST call uses
-#   npx wrangler secret put TWILIO_API_KEY_SECRET --env-file ../.env
-#   npx wrangler secret put TWILIO_AUTH_TOKEN     --env-file ../.env   # main account's auth token: checks webhook signatures
-#   npx wrangler secret put ADMIN_SECRET          --env-file ../.env   # x-admin-secret on /admin/*
-#   npx wrangler secret put VM_LINK_KEY           --env-file ../.env   # signs the 7-day voicemail links
-# One more per client on its own subaccount, named after the subaccount:
-#   npx wrangler secret put TWILIO_AUTH_TOKEN_AC0123... --env-file ../.env
+# Email to owners, the same binding the CRM uses. Voicemails are emailed as
+# well as texted, so they reach the owner while the toll-free number is still
+# unverified (texts fail with 30032 until then).
+[[send_email]]
+name = "EMAIL"
+allowed_sender_addresses = ["ryan@onezerobackspace.com"]
+
+# Secrets, never in this file. TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID,
+# TWILIO_API_KEY_SECRET and TWILIO_AUTH_TOKEN are in ../.env; ADMIN_SECRET and
+# VM_LINK_KEY are new random values. `wrangler secret put NAME` never reads the
+# value from .env: --env-file only supplies the Cloudflare login, and the value
+# comes from stdin (or a prompt). README step 5 pipes each one in without
+# showing it. One more per client on its own subaccount:
+#   TWILIO_AUTH_TOKEN_<subaccount SID>   that subaccount's auth token
 
 [[d1_databases]]
 binding        = "DB"
 database_name  = "ozb_textback"
-# Placeholder. Creating the database is a deploy step:
-#   npx wrangler d1 create ozb_textback --env-file ../.env
-# then paste the id it prints here.
-database_id    = "00000000-0000-0000-0000-000000000000"
+# Created 2026-10-24 with `npm run db:create`.
+database_id    = "03533078-defd-4924-9a27-02d02129b88d"
 migrations_dir = "migrations"
 
 # Daily at 07:15 UTC: delete calls and texts older than 90 days, and their

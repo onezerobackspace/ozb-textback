@@ -65,16 +65,37 @@ export async function optIn(env, clientId, phone) {
 }
 
 /**
- * Who the owner is talking to: the most recent caller, texter, or person the
- * owner last wrote to with "To ...". Hidden and invalid numbers are skipped.
+ * Who the owner is talking to: the newest of what the owner has actually seen
+ * (a caller whose voicemail reached the owner, a texter) or the person the
+ * owner last wrote to. A call the owner was never told about (a hang-up, a
+ * robocall, a caller who left no voicemail) doesn't count, so it can't take
+ * over a reply meant for someone else. Hidden and invalid numbers are skipped.
  */
 export async function latestPartner(env, client, isValid) {
   const { results } = await env.DB.prepare(
     `SELECT who FROM (
-       SELECT from_number AS who, at FROM calls WHERE client_id = ?1
+       SELECT from_number AS who, at FROM calls WHERE client_id = ?1 AND owner_notified = 1
        UNION ALL SELECT from_number, at FROM messages WHERE client_id = ?1 AND kind = 'inbound'
        UNION ALL SELECT to_number, at FROM messages WHERE client_id = ?1 AND kind = 'reply'
      ) WHERE who != ?2 AND who != ?3 ORDER BY at DESC LIMIT 20`,
   ).bind(client.id, client.owner_cell, client.number).all();
   return (results || []).map((r) => r.who).find(isValid) || null;
+}
+
+/** True when this number called or texted the client in the last `days` days. */
+export async function hasContacted(env, client, phone, days = 60) {
+  const since = hoursAgo(days * 24);
+  return !!(await env.DB.prepare(
+    `SELECT 1 AS x FROM calls WHERE client_id = ?1 AND from_number = ?2 AND at > ?3
+     UNION ALL SELECT 1 FROM messages WHERE client_id = ?1 AND kind = 'inbound' AND from_number = ?2 AND at > ?3 LIMIT 1`,
+  ).bind(client.id, phone, since).first());
+}
+
+/** How many messages of a kind the client sent or got since `since`, optionally only those whose body starts with `prefix`. */
+export async function countSince(env, client, kind, since, prefix = null) {
+  const r = prefix == null
+    ? await env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE client_id = ?1 AND kind = ?2 AND at > ?3").bind(client.id, kind, since).first()
+    : await env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE client_id = ?1 AND kind = ?2 AND at > ?3 AND substr(body, 1, length(?4)) = ?4")
+      .bind(client.id, kind, since, prefix).first();
+  return r?.n || 0;
 }

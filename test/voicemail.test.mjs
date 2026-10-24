@@ -39,6 +39,46 @@ test("a voicemail is texted to the owner with a signed link that needs no Twilio
   assert.match(get.auth, /^Basic /);
 });
 
+test("every voicemail is emailed to the owner too, so it arrives while the number is unverified", async (t) => {
+  const fake = useFakeTwilio(t);
+  const env = makeEnv();
+  addClient(env);
+  await voicemail(env);
+  assert.equal(env.EMAIL.sent.length, 1);
+  const m = env.EMAIL.sent[0];
+  assert.deepEqual(m.from, { email: "ryan@onezerobackspace.com", name: "OZB Text-back" });
+  assert.equal(m.to, "ryan@onezerobackspace.com");
+  assert.equal(m.subject, "Voicemail from (412) 555-0123 (0:42)");
+  const textLink = fake.sent().find((x) => x.To === OWNER).Body.split(": ").pop();
+  assert.ok(m.text.includes(textLink), "the same signed link");
+});
+
+test("when the text to the owner fails, the email still counts as telling them; with neither, it's unclaimed", async (t) => {
+  useFakeTwilio(t, { failTo: { [OWNER]: { status: 500, code: 20500 } } });
+  const env = makeEnv();
+  addClient(env);
+  await voicemail(env);
+  assert.equal(env.EMAIL.sent.length, 1);
+  assert.equal(row(env, "SELECT owner_notified FROM calls").owner_notified, 1);
+
+  const env2 = makeEnv({ EMAIL: undefined });
+  addClient(env2);
+  await voicemail(env2);
+  assert.equal(row(env2, "SELECT owner_notified FROM calls").owner_notified, 0);
+});
+
+test("with VM_LINK_KEY unset, the voicemail isn't claimed as told (and the webhook still answers quietly)", async (t) => {
+  useFakeTwilio(t);
+  const env = makeEnv({ VM_LINK_KEY: "" });
+  addClient(env);
+  const log = console.log;
+  console.log = () => {};
+  try { await voicemail(env); } finally { console.log = log; }
+  const call = row(env, "SELECT * FROM calls");
+  assert.equal(call.recording_sid, REC);
+  assert.equal(call.owner_notified, 0);
+});
+
 test("a blocked caller's voicemail still reaches the owner", async (t) => {
   const fake = useFakeTwilio(t);
   const env = makeEnv();

@@ -9,31 +9,64 @@ import { readFileSync } from "node:fs";
 
 const days = (n) => new Date(Date.now() - n * 86400_000).toISOString();
 
-test("retention deletes calls, texts and recordings older than 90 days, and keeps opt-outs", async (t) => {
-  const fake = useFakeTwilio(t, { deleteFails: new Set(["RE" + "9".repeat(32)]) });
+const sidOf = (p, c) => p + c.repeat(32);
+
+test("retention deletes calls, texts and recordings older than 90 days here and at Twilio, and keeps opt-outs", async (t) => {
+  const stuckRec = sidOf("RE", "9");
+  const stuckMsg = sidOf("SM", "8");
+  const fake = useFakeTwilio(t, {
+    deleteFails: new Set([stuckRec, stuckMsg]),
+    orphans: { [sidOf("CA", "4")]: [sidOf("RE", "4")] },
+  });
   const env = makeEnv();
   const id = addClient(env);
   const db = env.DB.db;
   const call = db.prepare(`INSERT INTO calls (client_id, call_sid, from_number, to_number, at, recording_sid) VALUES (?, ?, ?, ?, ?, ?)`);
-  call.run(id, "CA-old-rec", CALLER, OZB_NUMBER, days(91), "RE" + "1".repeat(32));
-  call.run(id, "CA-old-stuck", CALLER, OZB_NUMBER, days(95), "RE" + "9".repeat(32));
-  call.run(id, "CA-old-none", CALLER, OZB_NUMBER, days(120), null);
-  call.run(id, "CA-new", CALLER, OZB_NUMBER, days(89), "RE" + "3".repeat(32));
-  const msg = db.prepare(`INSERT INTO messages (client_id, direction, kind, from_number, to_number, body, at) VALUES (?, 'out', 'first', ?, ?, 'x', ?)`);
-  msg.run(id, OZB_NUMBER, CALLER, days(91));
-  msg.run(id, OZB_NUMBER, CALLER, days(10));
+  call.run(id, sidOf("CA", "1"), CALLER, OZB_NUMBER, days(91), sidOf("RE", "1"));   // old, with a voicemail
+  call.run(id, sidOf("CA", "9"), CALLER, OZB_NUMBER, days(95), stuckRec);          // old, Twilio won't delete its recording
+  call.run(id, sidOf("CA", "2"), CALLER, OZB_NUMBER, days(120), null);             // old, no voicemail
+  call.run(id, sidOf("CA", "4"), CALLER, OZB_NUMBER, days(100), null);             // old, a voicemail whose callback never came
+  call.run(id, sidOf("CA", "3"), CALLER, OZB_NUMBER, days(89), sidOf("RE", "3"));  // new
+  const msg = db.prepare(`INSERT INTO messages (client_id, direction, kind, from_number, to_number, body, twilio_sid, at) VALUES (?, 'out', 'first', ?, ?, 'x', ?, ?)`);
+  msg.run(id, OZB_NUMBER, CALLER, sidOf("SM", "1"), days(91));
+  msg.run(id, OZB_NUMBER, CALLER, sidOf("MM", "2"), days(150));
+  msg.run(id, OZB_NUMBER, CALLER, stuckMsg, days(92));
+  msg.run(id, OZB_NUMBER, CALLER, null, days(93));                                  // refused by Twilio: nothing there
+  msg.run(id, OZB_NUMBER, CALLER, sidOf("SM", "3"), days(10));
   db.prepare("INSERT INTO opt_outs (client_id, phone, at, keyword) VALUES (?, ?, ?, 'STOP')").run(id, CALLER, days(400));
   db.prepare("INSERT INTO usage (client_id, month, texts_out) VALUES (?, '2025-01', 5)").run(id);
 
   const r = await purgeOld(env);
-  assert.equal(r.recordings, 1);
-  const deletes = fake.calls.filter((c) => c.method === "DELETE").map((c) => c.url.match(/Recordings\/(RE\w+)/)[1]);
-  assert.deepEqual(deletes.sort(), ["RE" + "1".repeat(32), "RE" + "9".repeat(32)], "only old recordings, and only ones we know");
-  assert.deepEqual(rows(env, "SELECT call_sid FROM calls ORDER BY call_sid").map((x) => x.call_sid), ["CA-new", "CA-old-stuck"],
-    "a recording Twilio wouldn't delete keeps its row for tomorrow's try");
-  assert.equal(rows(env, "SELECT * FROM messages").length, 1);
+  const deleted = (kind) => fake.calls.filter((c) => c.method === "DELETE" && c.url.includes(`/${kind}/`)).map((c) => c.url.match(/\/(\w+)\.json$/)[1]).sort();
+  assert.deepEqual(deleted("Messages"), [sidOf("MM", "2"), sidOf("SM", "1"), stuckMsg].sort(), "old texts, at Twilio");
+  assert.deepEqual(deleted("Recordings"), [sidOf("RE", "1"), sidOf("RE", "4"), stuckRec].sort(), "old recordings, including the orphan");
+  assert.deepEqual(deleted("Calls"), [sidOf("CA", "1"), sidOf("CA", "2"), sidOf("CA", "4")].sort(), "old call records, once their recordings are gone");
+  assert.ok(!fake.calls.some((c) => c.url.includes(sidOf("CA", "3")) || c.url.includes(sidOf("SM", "3"))), "nothing newer than 90 days");
+  // Only the orphan lookup lists recordings, and only for that call.
+  assert.deepEqual(fake.calls.filter((c) => c.url.includes("/Recordings.json")).map((c) => new URL(c.url).searchParams.get("CallSid")), [sidOf("CA", "2"), sidOf("CA", "4")]);
+
+  assert.deepEqual(rows(env, "SELECT call_sid FROM calls ORDER BY call_sid").map((x) => x.call_sid), [sidOf("CA", "3"), sidOf("CA", "9")],
+    "a recording Twilio wouldn't delete keeps its row (and its call record) for tomorrow's try");
+  assert.deepEqual(rows(env, "SELECT twilio_sid FROM messages ORDER BY twilio_sid").map((x) => x.twilio_sid), [sidOf("SM", "3"), stuckMsg].sort(),
+    "a text Twilio wouldn't delete keeps its row and SID");
+  assert.equal(r.recordings, 2);
+  assert.equal(r.calls, 3);
+  assert.equal(r.messages, 3);
   assert.equal(rows(env, "SELECT * FROM opt_outs").length, 1);
   assert.equal(rows(env, "SELECT * FROM usage").length, 1);
+});
+
+test("retention stops at its request budget and picks up the rest the next day", async (t) => {
+  const fake = useFakeTwilio(t);
+  const env = makeEnv();
+  const id = addClient(env);
+  const msg = env.DB.db.prepare(`INSERT INTO messages (client_id, direction, kind, from_number, to_number, body, twilio_sid, at) VALUES (?, 'out', 'first', ?, ?, 'x', ?, ?)`);
+  for (let i = 0; i < 5; i++) msg.run(id, OZB_NUMBER, CALLER, "SM" + String(i).repeat(32), days(100 + i));
+  await purgeOld(env, { maxRequests: 3 });
+  assert.equal(rows(env, "SELECT * FROM messages").length, 2);
+  assert.equal(fake.calls.length, 3);
+  await purgeOld(env, { maxRequests: 3 });
+  assert.equal(rows(env, "SELECT * FROM messages").length, 0);
 });
 
 test("the cron runs the retention job", async (t) => {
@@ -87,6 +120,8 @@ test("admin usage reports the month against the plan's allowance", async (t) => 
   assert.equal(data.clients[0].texts, 305);
   assert.equal(data.clients[0].over_texts, 5);
   assert.equal(data.clients[0].over_minutes, 1);
+  assert.deepEqual(data.clients[0].calls_30_days, { texted: 1 });
+  assert.deepEqual(data.clients[0].caller_id_30_days, { none: 1 });
   assert.equal((await run(env, adminReq("/admin/usage?month=Oct"))).status, 400);
 });
 
@@ -109,16 +144,21 @@ test("add-client checks the client and builds the INSERT", () => {
   const good = { ...OZB };
   assert.deepEqual(clientProblems(good), []);
   const sql = clientSql(good, "2026-10-23T00:00:00Z");
-  assert.match(sql, /^INSERT INTO clients \(name, legal_name, owner_name, owner_cell, twilio_subaccount_sid, number, greeting, first_text, status, created_at\)/);
+  assert.match(sql, /^INSERT INTO clients \(name, legal_name, owner_name, owner_cell, owner_email, support_email, support_phone, twilio_subaccount_sid, number, greeting, first_text, lookup_landlines, twilio_opt_out, daily_text_cap, hourly_text_cap, notes, status, created_at\)/);
   assert.match(sql, /We''ll text you at this number/);
   assert.match(sql, /NULL/);
 
-  const bad = clientProblems({ ...OZB, number: "", greeting: "Hi, leave a message.", first_text: "Sorry we missed you! 20% off this week" });
+  const bad = clientProblems({ ...OZB, number: "", greeting: "Hi, leave a message.", first_text: "Sorry we missed you! 20% off this week",
+    owner_email: undefined, support_email: undefined, support_phone: undefined, twilio_opt_out: undefined, daily_text_cap: 0 });
   assert.ok(bad.some((p) => p.startsWith("number ")));
   assert.ok(bad.some((p) => p.startsWith("greeting ")));
   assert.ok(bad.some((p) => p.includes("names the business")));
   assert.ok(bad.some((p) => p.includes("Reply STOP")));
   assert.ok(bad.some((p) => p.includes("offer")));
+  assert.ok(bad.some((p) => p.startsWith("owner_email ")));
+  assert.ok(bad.some((p) => p.startsWith("support_email or support_phone ")));
+  assert.ok(bad.some((p) => p.startsWith("twilio_opt_out ")));
+  assert.ok(bad.some((p) => p.startsWith("daily_text_cap ")));
 });
 
 test("OZB's own client file passes everything but the number, which isn't bought yet", () => {

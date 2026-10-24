@@ -1,49 +1,85 @@
 // The forwarded call: greeting, voicemail, then the first text.
 //
 // Twilio requests, in order:
-//   /voice        when the forwarded call arrives (the number's Voice URL)
+//   /voice        when the forwarded call arrives (the number's Voice URL).
+//                 Says the greeting up to the end of the texting disclosure,
+//                 then <Redirect>s to /voice/heard.
+//   /voice/heard  only once that <Say> has finished: the caller heard the whole
+//                 disclosure. Marks the call, says the rest of the greeting,
+//                 then <Record>s the voicemail.
 //   /voice/done   when the voicemail ends: <Record action>
 //   /recording    when the recording is ready: <Record recordingStatusCallback>
 //   /voice/status when the call is over (the number's call status callback)
 //
 // The first text goes from /voice/done or /voice/status, whichever comes
-// first (src/send.js maybeFirstText). /voice/status is the one that always
-// comes, however the call ends, even when the caller hangs up during the
-// greeting; /voice/done comes sooner for a caller who reaches the beep. Not at
-// /voice: the caller hasn't heard the texting disclosure yet.
+// first (src/send.js maybeFirstText), and only for a call that reached
+// /voice/heard. A caller who hangs up during the greeting, even 10 seconds in,
+// never heard "We'll text you ... Reply STOP" in full, so isn't texted.
+// /voice/status is still the trigger that always comes, for a caller who heard
+// the disclosure and hung up at the beep without a Record action.
+//
+// If the database fails while a call arrives, the caller still gets a plain
+// greeting and the beep (safeGreeting): the voicemail is kept at Twilio, and
+// no text goes, because the greeting doesn't promise one.
 
 import { twiml, xml, accountOf } from "./twilio.js";
-import { spokenGreeting } from "./rules.js";
+import { splitGreeting } from "./rules.js";
 import { clientById, clientForCall, bump, nowIso } from "./store.js";
 import { maybeFirstText, sendText } from "./send.js";
+import { emailOwner } from "./notify.js";
 import { isAnonymous, isNanp, pretty, clock } from "./phone.js";
 import { vmLink } from "./vm.js";
 
 const origin = (env) => (env.PUBLIC_ORIGIN || "").replace(/\/$/, "");
 const say = (env, text) => `<Say voice="${xml(env.SAY_VOICE || "Polly.Joanna")}">${xml(text)}</Say>`;
+const record = (env) => {
+  const o = origin(env);
+  return `<Record maxLength="120" timeout="5" playBeep="true" trim="trim-silence" method="POST" action="${o}/voice/done"` +
+    ` recordingStatusCallback="${o}/recording" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed"/>`;
+};
 
 export const PAUSED_MESSAGE = "Sorry, we can't take your call right now. Please try again later. Goodbye.";
 export const UNKNOWN_MESSAGE = "Sorry, this number is not in service. Goodbye.";
+export const SAFE_MESSAGE = "Sorry we missed your call. Please leave a message after the tone.";
+
+/**
+ * What a caller hears when the worker can't do its normal job (a database
+ * error): a greeting without the texting disclosure, and the beep. No text
+ * goes for such a call, so the greeting mustn't promise one.
+ */
+export const safeGreeting = (env, name = "") =>
+  twiml(say(env, name ? `Thanks for calling ${name}. ${SAFE_MESSAGE}` : SAFE_MESSAGE) + record(env));
+
+/** Just the beep and the voicemail: for /voice/heard when it fails, as the greeting has already played. */
+export const recordOnly = (env) => twiml(record(env));
 
 /** POST /voice */
 export async function voice(env, params, accountSid) {
-  const client = await clientForCall(env, params, accountSid);
-  if (!client) return twiml(`${say(env, UNKNOWN_MESSAGE)}<Hangup/>`);
-  if (client.status !== "active") return twiml(`${say(env, PAUSED_MESSAGE)}<Hangup/>`);
+  let client = null;
+  try {
+    client = await clientForCall(env, params, accountSid);
+    if (!client) return twiml(`${say(env, UNKNOWN_MESSAGE)}<Hangup/>`);
+    if (client.status !== "active") return twiml(`${say(env, PAUSED_MESSAGE)}<Hangup/>`);
+    await env.DB.prepare(
+      `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (call_sid) DO NOTHING`,
+    ).bind(client.id, params.get("CallSid") || "", params.get("From") || "", params.get("To") || "",
+      params.get("ForwardedFrom") || params.get("CalledVia") || null, params.get("StirVerstat") || null, nowIso()).run();
+  } catch (e) {
+    console.log("/voice failed, plain greeting instead", String(e?.message || e).slice(0, 200));
+    return safeGreeting(env, client?.name || "");
+  }
+  const [disclosed] = splitGreeting(client.greeting);
+  return twiml(say(env, disclosed) + `<Redirect method="POST">${origin(env)}/voice/heard</Redirect>`);
+}
 
-  const callSid = params.get("CallSid") || "";
-  await env.DB.prepare(
-    `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (call_sid) DO NOTHING`,
-  ).bind(client.id, callSid, params.get("From") || "", params.get("To") || "",
-    params.get("ForwardedFrom") || params.get("CalledVia") || null, nowIso()).run();
-
-  const o = origin(env);
-  return twiml(
-    say(env, spokenGreeting(client.greeting)) +
-    `<Record maxLength="120" timeout="5" playBeep="true" trim="trim-silence" method="POST" action="${o}/voice/done"` +
-    ` recordingStatusCallback="${o}/recording" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed"/>`,
-  );
+/** POST /voice/heard: the greeting has played through the texting disclosure. */
+export async function voiceHeard(env, params, accountSid) {
+  const { call, client } = await callAndClient(env, params, accountSid);
+  if (!call) return twiml(record(env));
+  await env.DB.prepare("UPDATE calls SET heard_disclosure = 1 WHERE id = ?1").bind(call.id).run();
+  const [, rest] = splitGreeting(client.greeting);
+  return twiml((rest ? say(env, rest) : "") + record(env));
 }
 
 async function callAndClient(env, params, accountSid) {
@@ -73,11 +109,15 @@ export async function voiceStatus(env, params, accountSid) {
     "UPDATE calls SET call_status = ?2, seconds = ?3, answered = ?4 WHERE id = ?1 AND seconds IS NULL",
   ).bind(call.id, status, secs, status === "completed" ? 1 : 0).run();
   if (first.meta?.changes && secs) await bump(env, client.id, "voice_minutes", Math.ceil(secs / 60));
-  if (status === "completed") await maybeFirstText(env, client, call, { seconds: secs });
+  if (status === "completed") await maybeFirstText(env, client, call);
   return new Response(null, { status: 204 });
 }
 
-/** POST /recording: the voicemail is ready. Tells the owner, with a link that needs no Twilio login. */
+/**
+ * POST /recording: the voicemail is ready. Tells the owner, with a link that
+ * needs no Twilio login, by email (works whatever the number's verification
+ * status) and by text.
+ */
 export async function recording(env, params, accountSid) {
   const { call, client } = await callAndClient(env, params, accountSid);
   if (!call) return new Response(null, { status: 204 });
@@ -86,11 +126,22 @@ export async function recording(env, params, accountSid) {
   await env.DB.prepare("UPDATE calls SET recording_sid = ?2, voicemail_url = ?3, voicemail_seconds = ?4 WHERE id = ?1")
     .bind(call.id, params.get("RecordingSid") || null, params.get("RecordingUrl") || null, secs).run();
   if (secs < 1) return new Response(null, { status: 204 });
+  // The link first: if it can't be made (VM_LINK_KEY unset), nothing is claimed.
+  const link = await vmLink(env, call.id);
   const claim = await env.DB.prepare("UPDATE calls SET owner_notified = 1 WHERE id = ?1 AND owner_notified = 0").bind(call.id).run();
   if (!claim.meta?.changes) return new Response(null, { status: 204 });
-  const who = isNanp(call.from_number) ? pretty(call.from_number) : isAnonymous(call.from_number) ? "a blocked number" : call.from_number;
-  const body = `Voicemail from ${who}, ${clock(secs)}: ${await vmLink(env, call.id)}`;
-  const r = await sendText(env, client, { to: client.owner_cell, body, kind: "voicemail", callId: call.id });
-  if (!r.ok) await env.DB.prepare("UPDATE calls SET owner_notified = 0 WHERE id = ?1").bind(call.id).run();
+  let emailed = false;
+  let texted = false;
+  try {
+    const who = isNanp(call.from_number) ? pretty(call.from_number) : isAnonymous(call.from_number) ? "a blocked number" : call.from_number;
+    const body = `Voicemail from ${who}, ${clock(secs)}: ${link}`;
+    emailed = await emailOwner(env, client, {
+      subject: `Voicemail from ${who} (${clock(secs)})`,
+      text: `${body}\n\nThe link plays the recording for 7 days.\n\n${client.name} text-back`,
+    });
+    texted = (await sendText(env, client, { to: client.owner_cell, body, kind: "voicemail", callId: call.id })).ok;
+  } finally {
+    if (!emailed && !texted) await env.DB.prepare("UPDATE calls SET owner_notified = 0 WHERE id = ?1").bind(call.id).run();
+  }
   return new Response(null, { status: 204 });
 }

@@ -18,7 +18,7 @@ test("a correctly signed webhook is accepted", async (t) => {
   addClient(env);
   const res = await run(env, await signed("/voice", voiceFields));
   assert.equal(res.status, 200);
-  assert.match(await res.text(), /<Record /);
+  assert.ok((await res.text()).includes(`<Redirect method="POST">${ORIGIN}/voice/heard</Redirect>`));
 });
 
 test("a wrong signature is refused with 403", async (t) => {
@@ -78,7 +78,7 @@ test("a subaccount's webhooks are checked with that subaccount's token", async (
     first_text: "Briggs Electric: Sorry we missed your call. Reply STOP to opt out." });
   const res = await run(env, await signed("/voice", { ...voiceFields, To: "+18885550111" }, { account: SUB, token: SUB_TOKEN }));
   assert.equal(res.status, 200);
-  assert.match(await res.text(), /<Record /);
+  assert.ok((await res.text()).includes(`<Redirect method="POST">${ORIGIN}/voice/heard</Redirect>`));
 });
 
 test("a signed request from one account can't drive another account's number", async (t) => {

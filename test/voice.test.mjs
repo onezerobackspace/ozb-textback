@@ -3,24 +3,91 @@ import assert from "node:assert/strict";
 import {
   makeEnv, addClient, hook, missedCall, useFakeTwilio, rows, row, OZB, OZB_NUMBER, OWNER, CALLER,
 } from "./helpers.mjs";
-import { DISCLOSURE, hasDisclosure, spokenGreeting } from "../src/rules.js";
+import { DISCLOSURE, hasDisclosure, spokenGreeting, splitGreeting } from "../src/rules.js";
+import { CAP_NOTICE } from "../src/send.js";
 
-test("an active client's call gets the greeting with the disclosure, then a voicemail", async (t) => {
+test("an active client's call gets the greeting through the disclosure, then /voice/heard, then the rest and the beep", async (t) => {
   useFakeTwilio(t);
   const env = makeEnv();
   addClient(env);
-  const res = await hook(env, "/voice", { CallSid: "CA" + "1".repeat(32), From: CALLER, To: OZB_NUMBER });
+  const sid = "CA" + "1".repeat(32);
+  const res = await hook(env, "/voice", { CallSid: sid, From: CALLER, To: OZB_NUMBER, StirVerstat: "TN-Validation-Passed-A" });
   assert.equal(res.headers.get("Content-Type"), "text/xml; charset=utf-8");
   const xml = await res.text();
-  assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?><Response><Say voice="Polly.Joanna">Thanks for calling One Zero Backspace\./);
-  assert.match(xml, /We&apos;ll text you at this number about your call\. Message and data rates may apply\. Reply STOP to opt out\./);
-  assert.match(xml, /<Record maxLength="120" timeout="5" playBeep="true"/);
-  assert.match(xml, /action="https:\/\/textback\.onezerobackspace\.com\/voice\/done"/);
-  assert.match(xml, /recordingStatusCallback="https:\/\/textback\.onezerobackspace\.com\/recording"/);
-  assert.ok(xml.indexOf("Reply STOP") < xml.indexOf("<Record"), "the disclosure comes before the beep");
-  const call = row(env, "SELECT * FROM calls");
+  assert.equal(xml, '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">Hi, you&apos;ve reached One Zero Backspace. Sorry we missed your call. ' +
+    "We&apos;ll text you at this number about your call. Message and data rates may apply. Reply STOP to opt out.</Say>" +
+    '<Redirect method="POST">https://textback.onezerobackspace.com/voice/heard</Redirect></Response>');
+  let call = row(env, "SELECT * FROM calls");
   assert.equal(call.from_number, CALLER);
-  assert.equal(call.texted, 0);
+  assert.equal(call.stir_verstat, "TN-Validation-Passed-A");
+  assert.equal(call.heard_disclosure, 0);
+
+  const heard = await (await hook(env, "/voice/heard", { CallSid: sid, From: CALLER, To: OZB_NUMBER })).text();
+  assert.match(heard, /^<\?xml version="1.0" encoding="UTF-8"\?><Response><Say voice="Polly.Joanna">To leave a voicemail, stay on the line and speak after the tone\.<\/Say><Record /);
+  assert.match(heard, /<Record maxLength="120" timeout="5" playBeep="true"/);
+  assert.match(heard, /action="https:\/\/textback\.onezerobackspace\.com\/voice\/done"/);
+  assert.match(heard, /recordingStatusCallback="https:\/\/textback\.onezerobackspace\.com\/recording"/);
+  call = row(env, "SELECT * FROM calls");
+  assert.equal(call.heard_disclosure, 1);
+  assert.equal(call.texted, 0, "no text during the call");
+});
+
+test("splitGreeting cuts after the last part of the disclosure, wherever it is", () => {
+  assert.deepEqual(splitGreeting("Thanks for calling Acme."), [`Thanks for calling Acme. ${DISCLOSURE}`, ""]);
+  assert.deepEqual(splitGreeting("Acme here. Reply STOP to opt out of texts. We'll text you at this number. Msg and data rates may apply! Leave a message."),
+    ["Acme here. Reply STOP to opt out of texts. We'll text you at this number. Msg and data rates may apply!", "Leave a message."]);
+});
+
+test("a caller who hangs up during the greeting isn't texted, however long the call lasted", async (t) => {
+  const fake = useFakeTwilio(t);
+  const env = makeEnv();
+  addClient(env);
+  for (const seconds of [1, 5, 8, 12]) await missedCall(env, { from: `+1412555010${seconds % 10}`, heard: false, seconds });
+  assert.equal(fake.sent().length, 0);
+  assert.deepEqual(rows(env, "SELECT DISTINCT why_not_texted FROM calls").map((r) => r.why_not_texted), ["hung-up-in-greeting"]);
+});
+
+test("a caller who heard the disclosure and hung up at the beep is texted from the status callback", async (t) => {
+  const fake = useFakeTwilio(t);
+  const env = makeEnv();
+  addClient(env);
+  await missedCall(env, { heard: true, done: false, seconds: 14 });
+  assert.equal(fake.sent().length, 1);
+});
+
+test("a database error at /voice still gives the caller a greeting and the beep, with no texting promise", async (t) => {
+  const fake = useFakeTwilio(t);
+  const env = makeEnv();
+  addClient(env);
+  const real = env.DB.prepare;
+  env.DB = { ...env.DB, prepare: (sql) => { if (sql.includes("INSERT INTO calls")) throw new Error("D1 network connection lost"); return real(sql); } };
+  const log = console.log;
+  console.log = () => {};
+  let xml;
+  try {
+    xml = await (await hook(env, "/voice", { CallSid: "CA" + "4".repeat(32), From: CALLER, To: OZB_NUMBER })).text();
+  } finally { console.log = log; }
+  assert.match(xml, /Thanks for calling One Zero Backspace\. Sorry we missed your call\. Please leave a message after the tone\.<\/Say><Record /);
+  assert.doesNotMatch(xml, /text you/);
+  assert.equal(fake.sent().length, 0);
+});
+
+test("any other error in a webhook gets a quiet answer, never a 500", async (t) => {
+  useFakeTwilio(t);
+  const env = makeEnv();
+  addClient(env);
+  env.DB = { ...env.DB, prepare: () => { throw new Error("D1 down"); } };
+  const log = console.log;
+  console.log = () => {};
+  try {
+    const voice = await hook(env, "/voice", { CallSid: "CA" + "5".repeat(32), From: CALLER, To: OZB_NUMBER });
+    assert.equal(voice.status, 200);
+    assert.match(await voice.text(), /Sorry we missed your call\. Please leave a message after the tone\.<\/Say><Record /);
+    const heard = await hook(env, "/voice/heard", { CallSid: "CA" + "5".repeat(32) });
+    assert.match(await heard.text(), /^<\?xml[^>]*><Response><Record /);
+    assert.equal((await hook(env, "/voice/status", { CallSid: "CA" + "5".repeat(32), CallStatus: "completed" })).status, 204);
+    assert.equal((await hook(env, "/sms", { MessageSid: "SM" + "5".repeat(32), From: CALLER, To: OZB_NUMBER, Body: "hi" })).status, 200);
+  } finally { console.log = log; }
 });
 
 test("a greeting without the disclosure gets it added", () => {
@@ -156,13 +223,33 @@ test("a Canadian caller is texted", async (t) => {
   assert.equal(fake.sent().length, 1);
 });
 
-test("a caller who hangs up before the disclosure could play isn't texted", async (t) => {
+test("a call whose caller ID failed Twilio's check isn't texted; a missing or C attestation is", async (t) => {
   const fake = useFakeTwilio(t);
   const env = makeEnv();
-  addClient(env, { min_call_seconds: 3 });
-  await missedCall(env, { seconds: 1 });
-  assert.equal(fake.sent().length, 0);
-  assert.equal(row(env, "SELECT why_not_texted FROM calls").why_not_texted, "hung-up-early");
+  addClient(env);
+  await missedCall(env, { from: "+14125550101", stir: "TN-Validation-Failed-A" });
+  await missedCall(env, { from: "+14125550102", stir: "No-TN-Validation" });
+  await missedCall(env, { from: "+14125550103", stir: "TN-Validation-Passed-C" });
+  await missedCall(env, { from: "+14125550104" });
+  assert.deepEqual(fake.sent().map((m) => m.To), ["+14125550102", "+14125550103", "+14125550104"]);
+  assert.equal(row(env, "SELECT why_not_texted FROM calls WHERE from_number = '+14125550101'").why_not_texted, "caller-id-failed");
+});
+
+test("an hourly cap holds back a burst of first texts, and the owner is told once", async (t) => {
+  const fake = useFakeTwilio(t);
+  const env = makeEnv();
+  addClient(env, { hourly_text_cap: 2, daily_text_cap: 10 });
+  for (const n of ["+14125550101", "+14125550102", "+14125550103", "+14125550104"]) await missedCall(env, { from: n });
+  assert.equal(fake.sent().filter((m) => m.To !== OWNER).length, 2);
+  assert.deepEqual(fake.sent().filter((m) => m.To === OWNER).map((m) => m.Body), [CAP_NOTICE]);
+  assert.equal(row(env, "SELECT COUNT(*) AS n FROM calls WHERE why_not_texted = 'hourly-cap'").n, 2);
+});
+
+test("the default caps are small enough to brake a spoofing run", () => {
+  const env = makeEnv();
+  const id = addClient(env, { daily_text_cap: undefined, hourly_text_cap: undefined });
+  const c = row(env, "SELECT daily_text_cap, hourly_text_cap FROM clients WHERE id = ?", id);
+  assert.ok(c.daily_text_cap <= 20 && c.hourly_text_cap <= 10, JSON.stringify(c));
 });
 
 test("landline lookup is off by default and skips landlines when on", async (t) => {
@@ -186,8 +273,9 @@ test("a daily cap stops a flood of first texts", async (t) => {
   const env = makeEnv();
   addClient(env, { daily_text_cap: 2 });
   for (const n of ["+14125550101", "+14125550102", "+14125550103"]) await missedCall(env, { from: n });
-  assert.equal(fake.sent().length, 2);
+  assert.equal(fake.sent().filter((m) => m.To !== OWNER).length, 2);
   assert.equal(row(env, "SELECT why_not_texted FROM calls WHERE from_number = '+14125550103'").why_not_texted, "daily-cap");
+  assert.deepEqual(fake.sent().filter((m) => m.To === OWNER).map((m) => m.Body), [CAP_NOTICE]);
 });
 
 test("a send Twilio refuses with 21610 records an opt-out and doesn't count as texted", async (t) => {

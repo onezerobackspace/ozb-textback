@@ -7,14 +7,17 @@ CREATE TABLE clients (
   legal_name            TEXT NOT NULL,              -- as on the toll-free verification
   owner_name            TEXT NOT NULL,
   owner_cell            TEXT NOT NULL,              -- gets voicemails and callers' texts; replies from it are relayed
+  owner_email           TEXT,                       -- gets every voicemail by email too: works before the number is verified
+  support_email         TEXT,                       -- named in the HELP reply
+  support_phone         TEXT,                       -- named in the HELP reply (E.164)
   twilio_subaccount_sid TEXT,                       -- NULL: the number is on OZB's main account
   number                TEXT NOT NULL UNIQUE,       -- the client's Twilio number (toll-free)
   greeting              TEXT NOT NULL,              -- read to the caller; must disclose the text (src/rules.js)
   first_text            TEXT NOT NULL,              -- sent exactly as written: it must match the verified sample
   lookup_landlines      INTEGER NOT NULL DEFAULT 0, -- 1: Twilio Lookup each caller ($0.008) and skip landlines
   twilio_opt_out        INTEGER NOT NULL DEFAULT 1, -- 1: Twilio answers STOP/START/HELP itself, so we don't
-  min_call_seconds      INTEGER NOT NULL DEFAULT 3, -- a caller who hangs up sooner never heard the disclosure
-  daily_text_cap        INTEGER NOT NULL DEFAULT 50,-- first texts in any 24 hours, a brake on robocall floods
+  daily_text_cap        INTEGER NOT NULL DEFAULT 15,-- first texts in any 24 hours, a brake on spoofed-call floods
+  hourly_text_cap       INTEGER NOT NULL DEFAULT 8, -- first texts in any hour; past it the owner is told once
   status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused')),
   created_at            TEXT NOT NULL,
   paused_at             TEXT,
@@ -29,6 +32,8 @@ CREATE TABLE calls (
   from_number      TEXT NOT NULL,              -- as Twilio gave it: may be "anonymous" or a short code
   to_number        TEXT NOT NULL,
   forwarded_from   TEXT,
+  stir_verstat     TEXT,                       -- Twilio's StirVerstat (caller ID check), as given
+  heard_disclosure INTEGER NOT NULL DEFAULT 0, -- 1: the greeting played through the texting disclosure (/voice/heard)
   at               TEXT NOT NULL,
   answered         INTEGER NOT NULL DEFAULT 0, -- 1 once Twilio reports the call completed
   call_status      TEXT,
@@ -39,7 +44,7 @@ CREATE TABLE calls (
   recording_deleted_at TEXT,                   -- the retention cron deleted it at Twilio
   owner_notified   INTEGER NOT NULL DEFAULT 0,
   texted           INTEGER NOT NULL DEFAULT 0, -- 1: the first text was sent for this call
-  why_not_texted   TEXT                        -- e.g. opted-out, recent, anonymous, owner, send-failed
+  why_not_texted   TEXT                        -- e.g. hung-up-in-greeting, opted-out, recent, anonymous, owner, send-failed
 );
 CREATE INDEX calls_client_from ON calls (client_id, from_number, at);
 CREATE INDEX calls_at ON calls (at);
@@ -51,7 +56,7 @@ CREATE TABLE messages (
   id          INTEGER PRIMARY KEY,
   client_id   INTEGER NOT NULL REFERENCES clients(id),
   direction   TEXT NOT NULL CHECK (direction IN ('in', 'out', 'relay')),
-  kind        TEXT NOT NULL,                  -- first, voicemail, notice, confirm, help, inbound, owner, relay
+  kind        TEXT NOT NULL,                  -- first, voicemail, notice, receipt, held, confirm, help, inbound, owner, forward, reply
   call_id     INTEGER,
   from_number TEXT NOT NULL,
   to_number   TEXT NOT NULL,

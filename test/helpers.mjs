@@ -69,6 +69,15 @@ export function fakeTwilio(opts = {}) {
       if (opts.gone?.has(rec[1])) return new Response("not found", { status: 404 });
       return new Response("ID3-fake-mp3", { headers: { "Content-Type": "audio/mpeg" } });
     }
+    if (method === "GET" && u.pathname.endsWith("/Recordings.json")) {
+      const callSid = u.searchParams.get("CallSid");
+      return Response.json({ recordings: (opts.orphans?.[callSid] || []).map((sid) => ({ sid, call_sid: callSid })) });
+    }
+    const res = u.pathname.match(/\/(Messages|Calls)\/((?:SM|MM|CA)\w+)\.json$/);
+    if (res && method === "DELETE") {
+      if (opts.deleteFails?.has(res[2])) return new Response("boom", { status: 500 });
+      return new Response(null, { status: 204 });
+    }
     return new Response("unexpected", { status: 500 });
   };
   return { fetch, calls, sent };
@@ -97,24 +106,27 @@ export function makeEnv(extra = {}) {
     TWILIO_API_KEY_SECRET: "test-key-secret",
     ADMIN_SECRET: "test-admin-secret",
     VM_LINK_KEY: "test-vm-link-key",
+    MAIL_FROM: "ryan@onezerobackspace.com",
+    MAIL_FROM_NAME: "OZB Text-back",
+    EMAIL: fakeEmail(),
     ...extra,
   };
 }
 
-export const OZB = {
-  name: "One Zero Backspace",
-  legal_name: "One Zero Backspace LLC",
-  owner_name: "Ryan Lowe",
-  owner_cell: OWNER,
-  twilio_subaccount_sid: null,
-  number: OZB_NUMBER,
-  greeting: "Thanks for calling One Zero Backspace. Sorry we missed you. We'll text you at this number about your call. Message and data rates may apply. Reply STOP to opt out. Please leave a message after the beep.",
-  first_text: "One Zero Backspace: Sorry we missed your call. Reply here with what you need, or we'll call you back soon. Msg & data rates may apply. Reply STOP to opt out.",
-};
+/** Cloudflare's send_email binding: keeps what was sent. fail: true makes every send throw. */
+export function fakeEmail({ fail = false } = {}) {
+  const sent = [];
+  return { sent, async send(m) { if (fail) throw new Error("email refused"); sent.push(m); return { messageId: `m${sent.length}` }; } };
+}
+
+/** OZB's real client file (greeting, first text, settings), with a made-up number. */
+export const OZB_FILE = JSON.parse(readFileSync(new URL("../scripts/clients/ozb.json", import.meta.url), "utf8"));
+export const OZB = { ...OZB_FILE, number: OZB_NUMBER };
 
 /** Inserts a client and returns its id. */
 export function addClient(env, c = {}) {
-  const row = { ...OZB, status: "active", created_at: new Date().toISOString(), ...c };
+  // A key set to undefined is left out, so the column's default applies.
+  const row = Object.fromEntries(Object.entries({ ...OZB, status: "active", created_at: new Date().toISOString(), ...c }).filter(([, v]) => v !== undefined));
   const cols = Object.keys(row);
   const r = env.DB.db.prepare(`INSERT INTO clients (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).run(...cols.map((k) => row[k]));
   return Number(r.lastInsertRowid);
@@ -137,11 +149,24 @@ export const hook = async (env, path, fields, opts) => run(env, await signed(pat
 export const rows = (env, sql, ...args) => env.DB.db.prepare(sql).all(...args);
 export const row = (env, sql, ...args) => env.DB.db.prepare(sql).get(...args);
 
-/** A forwarded call that reaches the greeting, then ends after `seconds`. */
-export async function missedCall(env, { from = CALLER, to = OZB_NUMBER, sid = "CA" + Math.random().toString(16).slice(2).padEnd(32, "0"), seconds = 20, done = false, account, token } = {}) {
+export const newCallSid = () => "CA" + Math.random().toString(16).slice(2).padEnd(32, "0").slice(0, 32);
+
+/**
+ * A forwarded call that ends after `seconds`. heard: the greeting played
+ * through the disclosure (Twilio fetched /voice/heard); false for a caller who
+ * hung up during it. done: the voicemail step ended (/voice/done).
+ * voicemail: a recording of that many seconds (/recording), which also tells
+ * the owner. stir: Twilio's StirVerstat for the call.
+ */
+export async function missedCall(env, { from = CALLER, to = OZB_NUMBER, sid = newCallSid(), seconds = 20, heard = true, done = false, voicemail = 0, stir, account, token } = {}) {
   const opts = account ? { account, token } : undefined;
-  const v = await hook(env, "/voice", { CallSid: sid, From: from, To: to, CallStatus: "ringing" }, opts);
-  if (done) await hook(env, "/voice/done", { CallSid: sid, From: from, To: to }, opts);
+  const v = await hook(env, "/voice", { CallSid: sid, From: from, To: to, CallStatus: "ringing", ...(stir ? { StirVerstat: stir } : {}) }, opts);
+  if (heard) await hook(env, "/voice/heard", { CallSid: sid, From: from, To: to, CallStatus: "in-progress" }, opts);
+  if (done || voicemail) await hook(env, "/voice/done", { CallSid: sid, From: from, To: to }, opts);
+  if (voicemail) {
+    const rec = "RE" + sid.slice(2);
+    await hook(env, "/recording", { CallSid: sid, RecordingSid: rec, RecordingStatus: "completed", RecordingDuration: String(voicemail) }, opts);
+  }
   await hook(env, "/voice/status", { CallSid: sid, From: from, To: to, CallStatus: "completed", CallDuration: String(seconds) }, opts);
   return { sid, voice: v };
 }

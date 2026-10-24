@@ -3,10 +3,16 @@
   "legal_name": "One Zero Backspace LLC",
   "owner_name": "Ryan Lowe",
   "owner_cell": "+14122924603",
+  "owner_email": "ryan@onezerobackspace.com",
+  "support_email": "help@onezerobackspace.com",
+  "support_phone": "+14122924603",
   "twilio_subaccount_sid": null,
   "number": "",
-  "greeting": "Thanks for calling One Zero Backspace. Sorry we missed you. We'll text you at this number about your call. Message and data rates may apply. Reply STOP to opt out. Please leave a message after the beep.",
+  "greeting": "Hi, you've reached One Zero Backspace. Sorry we missed your call. We'll text you at this number about your call. Message and data rates may apply. Reply STOP to opt out. To leave a voicemail, stay on the line and speak after the tone.",
   "first_text": "One Zero Backspace: Sorry we missed your call. Reply here with what you need, or we'll call you back soon. Msg & data rates may apply. Reply STOP to opt out.",
   "lookup_landlines": 0,
-  "notes": "Client #1: OZB's own line. Ryan's Tello cell forwards unanswered calls here (**61*1<number>#). Number: fill in once bought."
+  "twilio_opt_out": 1,
+  "daily_text_cap": 10,
+  "hourly_text_cap": 5,
+  "notes": "Client #1: OZB's own line. Ryan's Tello cell forwards missed calls here: all three conditions (no answer, busy/declined, unreachable), with **004*1<10-digit number># or **61, **62 and **67 one by one (README, going live). The greeting, first text and HELP/START/STOP replies must match onezerobackspace.com/texting/ word for word (test/wording.test.mjs). Number: fill in once bought."
 }
