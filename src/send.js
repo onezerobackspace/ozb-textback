@@ -17,6 +17,11 @@ export async function sendText(env, client, { to, body, kind, direction = "out",
   if (to !== client.owner_cell && !allowOptedOut && (await isOptedOut(env, client.id, to))) {
     return { ok: false, skipped: "opted-out" };
   }
+  // Paused by the spending alarm (src/spend.js): nothing to callers but the
+  // STOP/HELP answers the rules require. The owner still hears about things.
+  if (client.texts_paused_at && to !== client.owner_cell && kind !== "confirm" && kind !== "help") {
+    return { ok: false, skipped: "spend-paused" };
+  }
   const r = await twilio(env, accountOf(client, env)).sendMessage({ from: client.number, to, body, statusCallback: statusUrl(env) });
   await env.DB.prepare(
     `INSERT INTO messages (client_id, direction, kind, call_id, from_number, to_number, body, twilio_sid, status, error_code, at)

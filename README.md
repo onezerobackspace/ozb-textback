@@ -259,6 +259,35 @@ on the account". Opt-outs are kept forever. Usage counters, which hold no phone
 numbers, are kept too. Emailed voicemail notices stay in the owner's mailbox;
 their links stop working after 7 days and the recording is gone after 90.
 
+## Spending protection (src/spend.js)
+
+The brakes, from cheapest to last resort:
+
+- **Caps**: first texts per hour and day (above); forwarded texts 10 an hour
+  per sender, 60 an hour and **200 a day** per client; owner replies 30 an
+  hour and **200 a day**; voicemails at most 2 minutes; past **30 forwarded
+  calls an hour** a caller hears "Sorry we missed your call. Please try again
+  later." and no voicemail (`why_not_texted = 'call-flood'`).
+- **Spending alarms**: two monthly Twilio usage triggers on total spend per
+  account, made with `node scripts/usage-triggers.mjs [AC...] --create` (a dry
+  run without `--create`; once for the main account and once for each client
+  subaccount). They POST to `/usage-trigger` (signed like every webhook).
+  - At **$15** (`SPEND_ALERT_AT`) Ryan is emailed at ALERT_TO.
+  - At **$40** (`SPEND_PAUSE_AT`) texting to callers pauses for the clients on
+    that account: `clients.texts_paused_at` is set, callers hear the plain
+    greeting (no texting promise) and can still leave a voicemail, the owner
+    still gets notices, and STOP/HELP answers still go. Ryan is emailed.
+    Resume from the client's Portal tab in the CRM, or
+    `POST /admin/clients/<id>/texting {"paused": false}`.
+  - A heavy normal month is about $7, so either level means something's wrong.
+- **Prepaid balance**: keep the Twilio balance prepaid with modest
+  auto-recharge, so the most that can ever go is what's in it.
+
+**Usage emails**: the daily cron emails each owner at 80% and at 100% of the
+plan's texts (sent and received) or minutes, once each a month, with the
+overage prices (3¢ a text, 5¢ a minute, nothing under $5). The CRM bills
+overage once the month is over (crm/src/overage.js).
+
 ## Admin API
 
 All of these need the `x-admin-secret` header.

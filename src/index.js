@@ -7,6 +7,7 @@ import { sms, status } from "./sms.js";
 import { serveVoicemail } from "./vm.js";
 import { admin } from "./admin.js";
 import { textingPage } from "./portal.js";
+import { usageTrigger, usageWarnings } from "./spend.js";
 import { purgeOld } from "./retention.js";
 
 // Every Twilio webhook: POST, form-encoded, signed.
@@ -18,6 +19,7 @@ const WEBHOOKS = {
   "/recording": recording,
   "/sms": sms,
   "/status": status,
+  "/usage-trigger": usageTrigger,
 };
 
 const text = (body, status) => new Response(body, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -61,5 +63,6 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(purgeOld(env).then((r) => console.log("retention", JSON.stringify(r))));
+    ctx.waitUntil(usageWarnings(env).then((r) => { if (r.sent.length) console.log("usage warnings", JSON.stringify(r)); }));
   },
 };

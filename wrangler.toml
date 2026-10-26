@@ -31,6 +31,12 @@ PLAN_MINUTES  = "60"
 # of the send_email binding's allowed_sender_addresses below.
 MAIL_FROM      = "ryan@onezerobackspace.com"
 MAIL_FROM_NAME = "OZB Text-back"
+# Spending alarms (src/spend.js, scripts/usage-triggers.mjs): Ryan is emailed
+# at SPEND_ALERT_AT dollars of Twilio spend in a month on a client's account,
+# and texting to callers pauses at SPEND_PAUSE_AT.
+ALERT_TO       = "support@tinyblock.net"
+SPEND_ALERT_AT = "15"
+SPEND_PAUSE_AT = "40"
 
 # Email to owners, the same binding the CRM uses. Voicemails are emailed as
 # well as texted, so they reach the owner while the toll-free number is still

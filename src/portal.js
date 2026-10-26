@@ -75,6 +75,7 @@ export async function overview(env, client) {
     number: client.number,
     status: client.status,
     editable: !!client.wording_editable,
+    texts_paused: client.texts_paused_at ? { at: client.texts_paused_at, why: client.texts_paused_why } : null,
     greeting: client.greeting,
     first_text: client.first_text,
     middle: middleOf(client.first_text, client.name),

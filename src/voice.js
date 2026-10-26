@@ -24,7 +24,7 @@
 
 import { twiml, xml, accountOf } from "./twilio.js";
 import { splitGreeting } from "./rules.js";
-import { clientById, clientForCall, bump, nowIso } from "./store.js";
+import { clientById, clientForCall, bump, nowIso, hoursAgo } from "./store.js";
 import { maybeFirstText, sendText } from "./send.js";
 import { emailOwner } from "./notify.js";
 import { isAnonymous, isNanp, pretty, clock } from "./phone.js";
@@ -41,6 +41,9 @@ const record = (env) => {
 export const PAUSED_MESSAGE = "Sorry, we can't take your call right now. Please try again later. Goodbye.";
 export const UNKNOWN_MESSAGE = "Sorry, this number is not in service. Goodbye.";
 export const SAFE_MESSAGE = "Sorry we missed your call. Please leave a message after the tone.";
+export const FLOOD_MESSAGE = "Sorry we missed your call. Please try again later. Goodbye.";
+/** Forwarded calls per client per hour before the short goodbye (a robocall run). */
+export const CALLS_PER_HOUR = 30;
 
 /**
  * What a caller hears when the worker can't do its normal job (a database
@@ -74,6 +77,20 @@ export async function voice(env, params, accountSid) {
     if (!client) return twiml(`${say(env, UNKNOWN_MESSAGE)}<Hangup/>`);
     if (client.status !== "active") return twiml(`${say(env, PAUSED_MESSAGE)}<Hangup/>`);
     if (env.VOICE_SAMPLER) return voiceSampler(env, client);
+    // A flood of calls (a robocall run): past the hour's limit, a short
+    // goodbye with no voicemail, so minutes stay small. Counted, not texted.
+    const lastHour = await env.DB.prepare("SELECT COUNT(*) AS n FROM calls WHERE client_id = ?1 AND at > ?2").bind(client.id, hoursAgo(1)).first();
+    const flood = (lastHour?.n || 0) >= CALLS_PER_HOUR;
+    // Texting paused by the spending alarm: the greeting mustn't promise a text.
+    const why = flood ? "call-flood" : client.texts_paused_at ? "spend-paused" : null;
+    if (why) {
+      await env.DB.prepare(
+        `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at, why_not_texted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT (call_sid) DO NOTHING`,
+      ).bind(client.id, params.get("CallSid") || "", params.get("From") || "", params.get("To") || "",
+        params.get("ForwardedFrom") || params.get("CalledVia") || null, params.get("StirVerstat") || null, nowIso(), why).run();
+      return flood ? twiml(`${say(env, FLOOD_MESSAGE)}<Hangup/>`) : safeGreeting(env, client.name);
+    }
     await env.DB.prepare(
       `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at, wording_version)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT MAX(id) FROM wording_versions WHERE client_id = ?1)) ON CONFLICT (call_sid) DO NOTHING`,

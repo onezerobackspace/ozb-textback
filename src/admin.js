@@ -4,6 +4,7 @@
 import { sameString } from "./twilio.js";
 import { clientById, easternMonth, nowIso } from "./store.js";
 import { overview, saveWording, voicemail } from "./portal.js";
+import { setTexting } from "./spend.js";
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
@@ -53,11 +54,12 @@ export async function admin(request, env, path) {
   }
 
   // The client portal: one client's page, its wording, its voicemails (src/portal.js).
-  const pm = path.match(/^\/admin\/clients\/(\d+)\/(portal|wording|calls\/(\d+)\/voicemail)$/);
+  const pm = path.match(/^\/admin\/clients\/(\d+)\/(portal|wording|texting|calls\/(\d+)\/voicemail)$/);
   if (pm) {
     const client = await clientById(env, Number(pm[1]));
     if (!client) return json({ ok: false, error: "no such client" }, 404);
     if (pm[2] === "portal" && request.method === "GET") return json({ ok: true, ...(await overview(env, client)) });
+    if (pm[2] === "texting" && request.method === "POST") return setTexting(env, client, await request.json().catch(() => ({})));
     if (pm[2] === "wording" && request.method === "PUT") return saveWording(env, client, await request.json().catch(() => ({})));
     if (pm[3] && request.method === "GET") return voicemail(env, client, Number(pm[3]), new URL(request.url).searchParams.has("download"));
     return json({ ok: false, error: "not allowed" }, 405);

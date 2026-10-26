@@ -29,7 +29,9 @@ const empty = () => twiml();
 // Brakes on floods. Past them, the texts are still saved; only the passing-on stops.
 export const FORWARDS_PER_SENDER = 10; // a sender's texts passed to the owner per hour
 export const FORWARDS_PER_CLIENT = 60; // all texts passed to the owner per hour
+export const FORWARDS_PER_DAY = 200;   // all texts passed to the owner per 24 hours (a bot in a loop)
 export const REPLIES_PER_HOUR = 30;    // owner replies relayed per hour
+export const REPLIES_PER_DAY = 200;    // owner replies relayed per 24 hours
 export const CONTACT_DAYS = 60;        // "To ..." only reaches numbers that called or texted in this many days
 export const PAUSED_NOTICE = "Not sent: this text-back line is paused. Call or text the customer from your own phone, or contact One Zero Backspace.";
 
@@ -101,6 +103,12 @@ export async function sms(env, params, accountSid) {
     if (!(await countSince(env, client, "held", hour, held))) await notifyOwner(env, client, held, "held");
     return empty();
   }
+  // The day's ceiling, whoever they're from: told once a day.
+  if ((await countSince(env, client, "forward", hoursAgo(24))) >= FORWARDS_PER_DAY) {
+    const held = `Texts to your text-back number aren't being passed on until tomorrow (over ${FORWARDS_PER_DAY} today). They're saved in the text-back log.`;
+    if (!(await countSince(env, client, "held", hoursAgo(24), held))) await notifyOwner(env, client, held, "held");
+    return empty();
+  }
 
   const media = Number.parseInt(params.get("NumMedia") || "0", 10) || 0;
   const extra = media ? ` [+${media} picture${media > 1 ? "s" : ""}, not forwarded: see Twilio]` : "";
@@ -126,6 +134,12 @@ async function pausedNotice(env, client) {
 async function ownerReply(env, client, text) {
   if ((await countSince(env, client, "reply", hoursAgo(1))) >= REPLIES_PER_HOUR) {
     return notifyOwner(env, client, `Not sent: over ${REPLIES_PER_HOUR} replies in the last hour. Try again later, or text from your own phone.`);
+  }
+  if ((await countSince(env, client, "reply", hoursAgo(24))) >= REPLIES_PER_DAY) {
+    return notifyOwner(env, client, `Not sent: over ${REPLIES_PER_DAY} replies today. Try again tomorrow, or text from your own phone.`);
+  }
+  if (client.texts_paused_at) {
+    return notifyOwner(env, client, "Not sent: texts from this number are on hold. One Zero Backspace has been told. Text the customer from your own phone for now.");
   }
   const cmd = parseOwnerText(text);
   if (cmd.error) {
