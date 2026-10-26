@@ -75,8 +75,8 @@ export async function voice(env, params, accountSid) {
     if (client.status !== "active") return twiml(`${say(env, PAUSED_MESSAGE)}<Hangup/>`);
     if (env.VOICE_SAMPLER) return voiceSampler(env, client);
     await env.DB.prepare(
-      `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (call_sid) DO NOTHING`,
+      `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at, wording_version)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT MAX(id) FROM wording_versions WHERE client_id = ?1)) ON CONFLICT (call_sid) DO NOTHING`,
     ).bind(client.id, params.get("CallSid") || "", params.get("From") || "", params.get("To") || "",
       params.get("ForwardedFrom") || params.get("CalledVia") || null, params.get("StirVerstat") || null, nowIso()).run();
   } catch (e) {

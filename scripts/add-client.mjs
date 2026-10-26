@@ -47,11 +47,12 @@ export function clientProblems(c) {
 
 const q = (v) => (v == null ? "NULL" : typeof v === "number" ? String(v) : `'${String(v).replace(/'/g, "''")}'`);
 
-/** The INSERT for a client. */
+/** The INSERT for a client, and its wording as version 1 (migrations/0002_wording.sql). */
 export function clientSql(c, now = new Date().toISOString()) {
   const cols = COLUMNS.filter((k) => c[k] !== undefined);
   const vals = cols.map((k) => (k === "lookup_landlines" || k === "twilio_opt_out" ? q(c[k] ? 1 : 0) : q(c[k])));
-  return `INSERT INTO clients (${[...cols, "status", "created_at"].join(", ")}) VALUES (${[...vals, "'active'", q(now)].join(", ")});`;
+  return `INSERT INTO clients (${[...cols, "status", "created_at"].join(", ")}) VALUES (${[...vals, "'active'", q(now)].join(", ")});\n` +
+    `INSERT INTO wording_versions (client_id, greeting, first_text, by, at) SELECT id, greeting, first_text, 'setup', created_at FROM clients WHERE number = ${q(c.number)};`;
 }
 
 function main(argv) {

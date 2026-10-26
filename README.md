@@ -275,6 +275,25 @@ All of these need the `x-admin-secret` header.
   is passed on to the owner, and the owner's replies aren't relayed (the owner
   is told so, once a day).
 
+For the client portal (`ozb-portal`, crm/src/portal.js, over a service
+binding), all in `src/portal.js`:
+
+- `GET /admin/clients/<id>/portal`: the number, wording (`middle` is the part
+  between "<Name>: " and the fixed "Msg & data rates may apply. Reply STOP to
+  opt out."), this month's usage, the last 25 calls (outcome, the caller's first
+  reply, voicemail length) and the wording versions.
+- `PUT /admin/clients/<id>/wording` with `{"greeting","middle","by"}`. Checked
+  again here: the disclosure, one text, no links. 409 for a client with
+  `wording_editable = 0` (OZB, whose wording onezerobackspace.com/texting/
+  quotes by hand). Every saved wording is a row in `wording_versions`, kept for
+  good, and each call records the version it heard (`calls.wording_version`).
+- `GET /admin/clients/<id>/calls/<callId>/voicemail[?download=1]`: the audio,
+  only for that client's call.
+
+`GET /texting/<id>` is the public texting page for a client whose wording is
+editable, built from the database so it always matches. **Have it reviewed
+before it's given to carriers as a client's opt-in record.**
+
 ## Adding a client
 
 `scripts/add-client.mjs <client.json>` checks the client and prints the INSERT.

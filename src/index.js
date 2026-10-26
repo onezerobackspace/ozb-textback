@@ -6,6 +6,7 @@ import { voice, voiceHeard, voiceDone, voiceStatus, recording, safeGreeting, rec
 import { sms, status } from "./sms.js";
 import { serveVoicemail } from "./vm.js";
 import { admin } from "./admin.js";
+import { textingPage } from "./portal.js";
 import { purgeOld } from "./retention.js";
 
 // Every Twilio webhook: POST, form-encoded, signed.
@@ -50,6 +51,9 @@ export default {
     if (vm && request.method === "GET") return serveVoicemail(request, env, vm[1]);
 
     if (path.startsWith("/admin/")) return admin(request, env, path);
+
+    const page = path.match(/^\/texting\/(\d+)$/);
+    if (page && request.method === "GET") return textingPage(env, Number(page[1]));
 
     if (path === "/health") return Response.json({ ok: true });
     return text("Not found", 404);
