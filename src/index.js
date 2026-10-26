@@ -25,7 +25,7 @@ const WEBHOOKS = {
 const text = (body, status) => new Response(body, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
@@ -35,7 +35,8 @@ export default {
       const signed = await verifyTwilio(request, env);
       if (!signed) return text("Forbidden", 403);
       try {
-        return await hook(env, signed.params, signed.accountSid);
+        // ctx lets a handler answer Twilio first and finish work after (waitUntil).
+        return await hook(env, signed.params, signed.accountSid, ctx);
       } catch (e) {
         // Never Twilio's "an application error has occurred" to a caller: a
         // call still gets a greeting (without the texting promise) and the

@@ -30,7 +30,21 @@ export function d1() {
     all: async () => ({ results: db.prepare(sql).all(...args) }),
     run: async () => ({ meta: { changes: db.prepare(sql).run(...args).changes } }),
   });
-  return { db, prepare: (sql) => stmt(sql) };
+  // Like D1's batch: in order, all or nothing; a SELECT gives its rows, a write its changes.
+  const batch = async (stmts) => {
+    db.exec("BEGIN");
+    try {
+      const out = stmts.map((s) => /^\s*(SELECT|WITH)\b/i.test(s.sql)
+        ? { results: db.prepare(s.sql).all(...s.args), meta: {} }
+        : { results: [], meta: { changes: db.prepare(s.sql).run(...s.args).changes } });
+      db.exec("COMMIT");
+      return out;
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  };
+  return { db, prepare: (sql) => stmt(sql), batch };
 }
 
 /**

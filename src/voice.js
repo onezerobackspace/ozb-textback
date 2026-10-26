@@ -79,23 +79,24 @@ export async function voice(env, params, accountSid) {
     if (env.VOICE_SAMPLER) return voiceSampler(env, client);
     // A flood of calls (a robocall run): past the hour's limit, a short
     // goodbye with no voicemail, so minutes stay small. Counted, not texted.
-    const lastHour = await env.DB.prepare("SELECT COUNT(*) AS n FROM calls WHERE client_id = ?1 AND at > ?2").bind(client.id, hoursAgo(1)).first();
-    const flood = (lastHour?.n || 0) >= CALLS_PER_HOUR;
+    // The count (made before this call is saved) and the save go to D1 as one
+    // batch, one round trip, so the greeting starts sooner.
+    const sid = params.get("CallSid") || "";
+    const [lastHour] = await env.DB.batch([
+      env.DB.prepare("SELECT COUNT(*) AS n FROM calls WHERE client_id = ?1 AND at > ?2 AND call_sid != ?3").bind(client.id, hoursAgo(1), sid),
+      env.DB.prepare(
+        `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at, wording_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT MAX(id) FROM wording_versions WHERE client_id = ?1)) ON CONFLICT (call_sid) DO NOTHING`,
+      ).bind(client.id, sid, params.get("From") || "", params.get("To") || "",
+        params.get("ForwardedFrom") || params.get("CalledVia") || null, params.get("StirVerstat") || null, nowIso()),
+    ]);
+    const flood = (lastHour?.results?.[0]?.n || 0) >= CALLS_PER_HOUR;
     // Texting paused by the spending alarm: the greeting mustn't promise a text.
     const why = flood ? "call-flood" : client.texts_paused_at ? "spend-paused" : null;
     if (why) {
-      await env.DB.prepare(
-        `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at, why_not_texted)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT (call_sid) DO NOTHING`,
-      ).bind(client.id, params.get("CallSid") || "", params.get("From") || "", params.get("To") || "",
-        params.get("ForwardedFrom") || params.get("CalledVia") || null, params.get("StirVerstat") || null, nowIso(), why).run();
+      await env.DB.prepare("UPDATE calls SET why_not_texted = ?2 WHERE call_sid = ?1").bind(sid, why).run();
       return flood ? twiml(`${say(env, FLOOD_MESSAGE)}<Hangup/>`) : safeGreeting(env, client.name);
     }
-    await env.DB.prepare(
-      `INSERT INTO calls (client_id, call_sid, from_number, to_number, forwarded_from, stir_verstat, at, wording_version)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT MAX(id) FROM wording_versions WHERE client_id = ?1)) ON CONFLICT (call_sid) DO NOTHING`,
-    ).bind(client.id, params.get("CallSid") || "", params.get("From") || "", params.get("To") || "",
-      params.get("ForwardedFrom") || params.get("CalledVia") || null, params.get("StirVerstat") || null, nowIso()).run();
   } catch (e) {
     console.log("/voice failed, plain greeting instead", String(e?.message || e).slice(0, 200));
     return safeGreeting(env, client?.name || "");
@@ -122,10 +123,18 @@ async function callAndClient(env, params, accountSid) {
   return { call, client };
 }
 
-/** POST /voice/done: the voicemail ended (or timed out in silence). */
-export async function voiceDone(env, params, accountSid) {
+/**
+ * POST /voice/done: the voicemail ended (or timed out in silence). The caller
+ * hears goodbye at once; the first text goes out after, in the background.
+ * /voice/status sends it too when the call ends, and maybeFirstText sends at
+ * most once, so a text that didn't go here still goes there.
+ */
+export async function voiceDone(env, params, accountSid, ctx) {
   const { call, client } = await callAndClient(env, params, accountSid);
-  if (call) await maybeFirstText(env, client, call);
+  if (call) {
+    const send = maybeFirstText(env, client, call).catch((e) => console.log("/voice/done text failed", String(e?.message || e).slice(0, 200)));
+    if (ctx?.waitUntil) ctx.waitUntil(send); else await send;
+  }
   return twiml(`${say(env, "Thank you. Goodbye.")}<Hangup/>`);
 }
 
