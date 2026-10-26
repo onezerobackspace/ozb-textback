@@ -29,7 +29,7 @@ function readEnv(path) {
   const out = {};
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, "").trim();
   }
   return out;
 }
@@ -55,4 +55,4 @@ async function main(argv) {
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv.slice(2)).then((c) => process.exit(c));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv.slice(2)).then((c) => { process.exitCode = c; });
